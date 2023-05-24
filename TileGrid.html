@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Random Grayscale Tiles</title>
+  <style>
+    :root {
+      --tile-size: 10px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(50, var(--tile-size));
+      grid-template-rows: repeat(50, var(--tile-size));
+      width: 500px;
+      height: 500px;
+    }
+
+    .tile {
+      background-color: gray;
+    }
+
+    .entity1 {
+      position: absolute;
+      width: 20px;
+      height: 20px;
+      background-color: rgb(255, 127, 95);
+      border-radius: 50%;
+      pointer-events: none;
+    }
+
+    .entity2 {
+      position: absolute;
+      width: 8px;
+      height: 8px;
+      background-color: rgb(191, 191, 191);
+      pointer-events: none;
+    }
+
+    .button-active {
+      background-color: green;
+    }
+
+    .cursor {
+      width: var(--tile-size);
+      height: var(--tile-size);
+      pointer-events: none;
+      position: absolute;
+      background-color: rgba(255, 255, 255, 0.5);
+      z-index: 1;
+    }
+
+    .textbox-container {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .textbox {
+      width: 150px;
+      height: 20px;
+    }
+
+    .container {
+      position: relative;
+    }
+  </style>
+</head>
+<body>
+  <div class="grid"></div>
+
+  <div class="textbox-container">
+    <div class="text-box" id="textbox1">Text Box 1</div>
+    <div class="text-box" id="textbox2">Text Box 2</div>
+    <div class="text-box" id="textbox3">Text Box 3</div>
+    <div class="text-box" id="textbox4">Text Box 4</div>
+  </div>
+
+  <div>
+    <button id="button1">Reset</button>
+    <button id="button2">Delete</button>
+    <button id="button3">Building</button>
+    <button id="button4">Road</button>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/simplex-noise/2.4.0/simplex-noise.min.js"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", function() {
+
+
+      // ########## ########## ########## ##########                  ########## ########## ########## ##########
+      // ########## ########## ########## ##########       MAIN       ########## ########## ########## ##########
+      // ########## ########## ########## ##########                  ########## ########## ########## ##########
+
+      const terrainScale = 0.028;
+      const waterLevel = 0.25;
+      const sandLevel = 0.3;
+      const grassLevel = 0.75;
+
+      const oreScale = 0.1;
+      const oreDensity = 0.3;
+
+      const treeScale = 0.025;
+      const treeDensity = 0.4;
+
+      const tiles = {
+        grass : '#00EF00',
+        rock : '#6F6F6F',
+        trees : '#00AF00',
+        ore : '#4F4F6F',
+        water : '#003FBF',
+        sand : '#BFBF5F'
+      }
+
+      let resources = {
+        stone : 1000,
+        wood : 500,
+        sand : 0,
+        coal : 0,
+        iron : 0,
+        copper : 0
+      }
+
+      const roadCost = 2;
+      const buildingCost = 5;
+
+      const grid = document.querySelector(".grid");
+      const styles = window.getComputedStyle(grid);
+      let bounds = null;
+
+      const columnCount = styles.gridTemplateColumns.split(" ").length;
+      const rowCount = styles.gridTemplateRows.split(" ").length;
+      const tileSize = parseInt(styles.getPropertyValue("--tile-size"), 10);
+
+      initTileMap();
+      let colorMap = createColorMap();
+      setTiles(colorMap);
+
+      let entityMap = null;
+      const entityContainer = document.createElement("div");
+      entityContainer.classList.add("entity-container");
+      grid.parentNode.insertBefore(entityContainer, grid.nextSibling);
+      initEntityMap();
+
+      const cursorElement = document.createElement("div");
+      cursorElement.classList.add("cursor");
+      document.body.appendChild(cursorElement);
+
+      let placingRoads = false;
+
+      let gameTick = setInterval(gameLoop, 1000 / 60);
+
+
+      // ########## ########## ########## ##########                  ########## ########## ########## ##########
+      // ########## ########## ########## ##########      EVENTS      ########## ########## ########## ##########
+      // ########## ########## ########## ##########                  ########## ########## ########## ##########
+
+
+      // buttons
+      document.addEventListener("click", function(event) {
+        if (event.target.matches("#button1")) {
+          buttonReset(event.target);
+        } else if (event.target.matches("#button2")) {
+          buttonDelete(event.target);
+        } else if (event.target.matches("#button3")) {
+          buttonBuilding(event.target);
+        } else if (event.target.matches("#button4")) {
+          buttonRoad(event.target);
+        }
+      });
+
+      // mouse click
+      document.querySelector(".grid").addEventListener("click", function(event) {
+        if (document.querySelector("#button2").classList.contains("button-active")) { // delete button
+          const mouseX = event.clientX - bounds.left;
+          const mouseY = event.clientY - bounds.top;
+          const col = Math.floor(mouseX / tileSize);
+          const row = Math.floor(mouseY / tileSize);
+          const entity = entityMap[row][col];
+          if(entity != null) {
+            removeEntity(col, row, "entity1");
+          }
+        } else if (document.querySelector("#button3").classList.contains("button-active")) { // buildings button
+          const mouseX = event.clientX - bounds.left;
+          const mouseY = event.clientY - bounds.top;
+          const col = Math.floor(mouseX / tileSize);
+          const row = Math.floor(mouseY / tileSize);
+          if(resources.stone >= buildingCost) {
+            if(placeEntity(col, row, "entity1", 2, 2)) {
+              resources.stone -= buildingCost;
+            }
+          }
+        }
+      });
+
+      // mouse down
+      document.querySelector(".grid").addEventListener("mousedown", function(event) {
+        if (document.querySelector("#button4").classList.contains("button-active")) { // roads button
+          placingRoads = true;
+        }
+      });
+
+      // mouse up
+      document.querySelector(".grid").addEventListener("mouseup", function(event) {
+        placingRoads = false;
+      });
+
+      // mouse out
+      document.querySelector(".grid").addEventListener("mouseout", function(event) {
+        if (!event.relatedTarget || !this.contains(event.relatedTarget)) {
+          placingRoads = false;
+          cursorElement.style.visibility = "hidden";
+        }
+      });
+
+      // mouse move
+      document.querySelector(".grid").addEventListener("mousemove", function(event) {
+        const mouseX = event.clientX - bounds.left;
+        const mouseY = event.clientY - bounds.top;
+        let col = Math.floor(mouseX / tileSize);
+        let row = Math.floor(mouseY / tileSize);
+
+        const cursorCols = parseInt(getComputedStyle(cursorElement).width, 10) / tileSize;
+        const cursorRows = parseInt(getComputedStyle(cursorElement).height, 10) / tileSize;
+
+        if(0 > row || row + cursorRows - 1 >= rowCount || 0 > col || col + cursorCols - 1 >= columnCount) {
+          cursorElement.style.visibility = "hidden";
+        } else {
+          cursorElement.style.visibility = "visible";
+        }
+
+        cursorElement.style.left = col * tileSize + bounds.left + "px";
+        cursorElement.style.top = row * tileSize + bounds.top + "px";
+
+        if(placingRoads) {
+          if(resources.stone >= roadCost) {
+            if(placeEntity(col, row, "entity2", 1, 1)) {
+              resources.stone -= roadCost;
+            }
+          }
+        }
+      });
+
+
+    // ########## ########## ########## ##########                    ########## ########## ########## ##########
+    // ########## ########## ########## ##########     FUNCTIONS      ########## ########## ########## ##########
+    // ########## ########## ########## ##########                    ########## ########## ########## ##########
+
+    function gameLoop() {
+      updateResourceText();
+    }
+
+
+    // ########## ########## ########## ##########      Entities      ########## ########## ########## ##########
+
+      function initEntityMap() {
+        entityMap = new Array(rowCount);
+        for (let r = 0; r < rowCount; r++) {
+          entityMap[r] = new Array(columnCount);
+          for (let c = 0; c < columnCount; c++) {
+            entityMap[r][c] = null;
+          }
+        }
+      }
+
+      function placeEntity(col, row, entityType, cols, rows) {
+        let clearUnder = true;
+        let offRock = true;
+        for (let r = row; r < row + rows; r++) {
+          for (let c = col; c < col + cols; c++) {
+            if(!onMap(c, r)) {
+              return false;
+            }
+            clearUnder = clearUnder && !entityMap[r][c] && colorMap[r][c] != tiles.water;
+            offRock = offRock && colorMap[r][c] != tiles.rock && colorMap[r][c] != tiles.ore;
+          }
+        }
+        if (clearUnder) {
+          if(!offRock) {
+            let isolatedRock = true;
+            for (let r = row; r < row + rows; r++) {
+              for (let c = col; c < col + cols; c++) {
+                const clearOrthogonal = tileOpen(c - 1, r) || tileOpen(c + 1, r) || tileOpen(c, r - 1) || tileOpen(c, r + 1);
+                isolatedRock = isolatedRock && !clearOrthogonal;
+              }
+            }
+            if(isolatedRock) {
+              return false;
+            }
+          }
+          const entityElement = document.createElement("div");
+          entityElement.classList.add(entityType);
+          entityContainer.appendChild(entityElement);
+          const x = col * tileSize + bounds.left;
+          const y = row * tileSize + bounds.top
+          const { width, height } = entityElement.getBoundingClientRect();
+          if(width >= tileSize) {
+            entityElement.style.left = x + "px";
+          } else {
+            entityElement.style.left = x + (tileSize - width) / 2 + "px";
+          }
+          if(height >= tileSize) {
+            entityElement.style.top = y + "px";
+          } else {
+            entityElement.style.top = y + (tileSize - height) / 2 + "px";
+          }
+          for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+              entityMap[row + r][col + c] = entityElement;
+            }
+          }
+          return true;
+        } else {
+          return false;
+        }
+      }
+
+      function removeEntity(col, row) {
+        const entity = entityMap[row][col];
+        let [left, right, up, down] = [0, 0, 0, 0];
+
+        while (col + left >= 0 && entityMap[row][col + left - 1] === entity) left--;
+        while (col + right < columnCount && entityMap[row][col + right + 1] === entity) right++;
+        while (row + up >= 0 && entityMap[row + up - 1][col] === entity) up--;
+        while (row + down < rowCount && entityMap[row + down + 1][col] === entity) down++;
+
+        for (let r = left; r <= right; r++) {
+          for (let c = up; c <= down; c++) {
+            entityMap[row + r][col + c] = null;
+          }
+        }
+        entityContainer.removeChild(entity);
+      }
+
+      function getEntityWidth(col, row) {
+        const entity = entityMap[row][col];
+        let [left, right] = [0, 0];
+
+        while (col + left >= 0 && entityMap[row][col + left] === entity) left--;
+        while (col + right < columnCount && entityMap[row][col + right] === entity) right++;
+
+        return right - left;
+      }
+
+      function getEntityHeight(col, row) {
+        const entity = entityMap[row][col];
+        let [up, down] = [0, 0];
+
+        while (row + up >= 0 && entityMap[row + up][col] === entity) up--;
+        while (row + down < rowCount && entityMap[row + down][col] === entity) down++;
+
+        return down - up;
+      }
+
+      // ########## ########## ########## ##########       Tiles      ########## ########## ########## ##########
+
+      function initTileMap() {
+        for (let r = 0; r < rowCount; r++) {
+          for (let c = 0; c < columnCount; c++) {
+            const tile = document.createElement("div");
+            tile.classList.add("tile");
+            tile.style.backgroundColor = '#000000';
+            grid.appendChild(tile);
+          }
+        }
+        bounds = grid.getBoundingClientRect();
+      }
+
+      function createColorMap() {
+        const terrainNoise = new SimplexNoise();
+        const treeNoise = new SimplexNoise();
+        const oreNoise = new SimplexNoise();
+
+        // generate terrain
+        const colorMap = new Array(rowCount);
+        for (let r = 0; r < rowCount; r++) {
+          colorMap[r] = new Array(columnCount);
+          for (let c = 0; c < columnCount; c++) {
+            let noise = (terrainNoise.noise2D(c * terrainScale, r * terrainScale) + 1) * 0.5;
+            if(noise <= waterLevel) {
+              colorMap[r][c] = tiles.water;
+            } else if(noise <= sandLevel) {
+              colorMap[r][c] = tiles.sand;
+            } else if(noise <= grassLevel) {
+              colorMap[r][c] = tiles.grass;
+            } else {
+              colorMap[r][c] = tiles.rock;
+            }
+            noise = (treeNoise.noise2D(c * treeScale, r * treeScale) + 1) * 0.5;
+            if(noise <= treeDensity) {
+              if(colorMap[r][c] === tiles.grass) {
+                colorMap[r][c] = tiles.trees;
+              }
+            }
+            noise = (oreNoise.noise2D(c * oreScale, r * oreScale) + 1) * 0.5;
+            if(noise <= oreDensity) {
+              if(colorMap[r][c] === tiles.rock) {
+                colorMap[r][c] = tiles.ore;
+              }
+            }
+          }
+        }
+        return colorMap;
+      }
+
+      function setTiles(colorMap) {
+        const grid = document.querySelector(".grid");
+        for (let r = 0; r < colorMap.length; r++) {
+          for (let c = 0; c < colorMap[r].length; c++) {
+            const index = r * colorMap[r].length + c;
+            grid.children[index].style.backgroundColor = colorMap[r][c];
+          }
+        }
+      }
+
+      function tileOpen(col, row) {
+        if(onMap(col, row)) {
+          if(colorMap[row][col] === tiles.grass || colorMap[row][col] === tiles.trees || colorMap[row][col] === tiles.sand) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      function onMap(col, row) {
+        return 0 <= row && row < rowCount && 0 <= col && col < columnCount;
+      }
+
+      // ########## ########## ########## ##########      Buttons     ########## ########## ########## ##########
+
+      function buttonReset(button) {
+        colorMap = createColorMap();
+        setTiles(colorMap);
+        while (entityContainer.firstChild) {
+          entityContainer.removeChild(entityContainer.firstChild);
+        }
+        initEntityMap();
+        resources.stone = 1000;
+      }
+
+      function buttonDelete(button) {
+        button.classList.toggle("button-active");
+        deactiveButton("button3");
+        deactiveButton("button4");
+      }
+
+      function buttonBuilding(button) {
+        button.classList.toggle("button-active");
+        deactiveButton("button2");
+        deactiveButton("button4");
+        if (button.classList.contains("button-active")) {
+          cursorElement.style.width = tileSize * 2 + "px";
+          cursorElement.style.height = tileSize * 2 + "px";
+        }
+      }
+
+      function buttonRoad(button) {
+        button.classList.toggle("button-active");
+        deactiveButton("button2");
+        deactiveButton("button3");
+      }
+
+      function deactiveButton(buttonSelector) {
+        const button = document.querySelector("#" + buttonSelector);
+        if (button.classList.contains("button-active")) {
+          button.classList.remove("button-active");
+        }
+        cursorElement.style.width = tileSize + "px";
+        cursorElement.style.height = tileSize + "px";
+      }
+
+      // ########## ########## ########## ##########     Text Boxes    ########## ########## ########## ##########
+
+      function updateResourceText() {
+        var textbox1 = document.getElementById('textbox1');
+        var textbox2 = document.getElementById('textbox2');
+        var textbox3 = document.getElementById('textbox3');
+        var textbox4 = document.getElementById('textbox4');
+
+        textbox1.textContent = "Stone: " + resources.stone;
+        textbox2.textContent = "Wood: " + resources.wood;
+        textbox3.textContent = "Sand: " + resources.sand;
+        textbox4.textContent = "Coal: " + resources.coal;
+      }
+
+
+
+    });
+  </script>
+</body>
+</html>
